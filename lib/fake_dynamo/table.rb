@@ -116,7 +116,7 @@ module FakeDynamo
     def put_item(data)
       item = Item.from_data(data['Item'], key_schema, attribute_definitions)
       old_item = @items[item.key]
-      check_conditions(old_item, data['Expected'])
+      check_conditions(old_item, data['Expected'], data['ConditionalOperator'])
       @items[item.key] = item
 
       return_values(data, old_item).merge(item.collection_metrics(data))
@@ -160,7 +160,7 @@ module FakeDynamo
     def delete_item(data)
       key = Key.from_data(data['Key'], key_schema)
       item = @items[key]
-      check_conditions(item, data['Expected'])
+      check_conditions(item, data['Expected'], data['ConditionalOperator'])
 
       @items.delete(key) if item
       if !item
@@ -182,7 +182,7 @@ module FakeDynamo
     def update_item(data)
       key = Key.from_data(data['Key'], key_schema)
       item = @items[key]
-      check_conditions(item, data['Expected'])
+      check_conditions(item, data['Expected'], data['ConditionalOperator'])
 
       unless item
         item = Item.from_key(key)
@@ -524,10 +524,9 @@ module FakeDynamo
       end
     end
 
-    def check_conditions(old_item, conditions)
+    def check_conditions(old_item, conditions, conditional_op)
       return unless conditions
-
-      conditions.each do |name, predicate|
+      def check_condition_compat(old_item, name, predicate)
         exist = predicate['Exists']
         value = predicate['Value']
 
@@ -537,19 +536,89 @@ module FakeDynamo
           elsif exist
             raise ValidationException, "'Exists' is set to true. 'Exists' must be set to false when no Attribute value is specified"
           elsif !exist # false
-            if old_item and old_item[name]
-              raise ConditionalCheckFailedException
-            end
+            return !(old_item and old_item[name])
           end
         else
           expected_attr = Attribute.from_hash(name, value)
 
           if exist.nil? or exist
-            raise ConditionalCheckFailedException unless (old_item and old_item[name] == expected_attr)
+            return (old_item and old_item[name] == expected_attr)
           elsif !exist # false
             raise ValidationException, "Cannot expect an attribute to have a specified value while expecting it to not exist"
           end
         end
+      end
+
+      def evaluator(name, op, value_list)
+        if op == "BETWEEN"
+          low = Attribute.from_hash(name, value_list.first)
+          high = Attribute.from_hash(name, value_list.first)
+          return Proc.new { |old_attr| old_attr.between? low, high }
+        elsif op == "IN"
+          return Proc.new { |old_attr|
+            value_list.any? { |value|
+              expected_attr = Attribute.from_hash(name, value)
+              old_attr.include? expected_attr
+            }
+          }
+        elsif op == "NOT_NULL"
+          return Proc.new { |old_attr| !!old_attr }
+        elsif op == "NULL"
+          return Proc.new { |old_attr| !old_attr }
+        end
+
+        expected_attr = Attribute.from_hash(name, value_list.first)
+        if op == "EQ"
+          Proc.new { |old_attr| old_attr == expected_attr}
+        elsif op == "NE"
+          Proc.new { |old_attr| old_attr != expected_attr}
+        elsif op == "LE"
+          Proc.new { |old_attr| old_attr <= expected_attr}
+        elsif op == "LT"
+          Proc.new { |old_attr| old_attr < expected_attr}
+        elsif op == "GE"
+          Proc.new { |old_attr| old_attr >= expected_attr}
+        elsif op == "GT"
+          Proc.new { |old_attr| old_attr > expected_attr}
+        elsif op == "CONTAINS"
+          Proc.new { |old_attr| old_attr.include? expected_attr }
+        elsif op == "NOT_CONTAINS"
+          Proc.new { |old_attr| !old_attr.include? expected_attr }
+        elsif op == "BEGINS_WITH"
+          Proc.new { |old_attr| !old_attr.start_with? expected_attr }
+        else
+          raise ValidationException, "Unknown value for 'ComparisonOperator'"
+        end
+      end
+
+      checks = conditions.map do |name, predicate|
+        if predicate.has_key? "Value" or predicate.has_key? "Exists"
+          raise ValidationException, "'ConditionalOperator' can not be used with 'Exists' and 'Value'" unless conditional_op.nil?
+          check_condition_compat(old_item, name, predicate)
+        else
+          value_list = predicate["AttributeValueList"]
+          compare_op = predicate["ComparisonOperator"]
+          if compare_op == "BETWEEN"
+            raise ValidationException, "'AttributeValueList' should contain exactly two 'AttributeValue's" unless value_list and value_list.length == 2
+          elsif compare_op == "IN"
+            raise ValidationException, "'AttributeValueList' should contain at least one 'AttributeValue'" unless value_list and value_list.length >= 1
+          elsif compare_op == "NULL" or compare_op == "NOT_NULL"
+            raise ValidationException, "'AttributeValueList' can not be used with the provided 'ComparisonOperator'" unless value_list.nil?
+          else
+            raise ValidationException, "'AttributeValueList' should contain exactly one 'AttributeValue'" unless value_list and value_list.length == 1
+          end
+          old_attr = old_item && old_item[name]
+          evaluator(name, compare_op, value_list).call(old_attr)
+        end
+      end
+
+      conditional_op = conditional_op || "AND"
+      if conditional_op == "AND"
+        raise ConditionalCheckFailedException unless checks.all?
+      elsif conditional_op == "OR"
+        raise ConditionalCheckFailedException unless checks.any?
+      else
+        raise ValidationException, "'ConditionalOperator' must either be 'OR' or 'AND'"
       end
     end
 
