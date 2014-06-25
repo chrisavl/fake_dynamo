@@ -563,7 +563,8 @@ module FakeDynamo
     end
 
     def check_conditions(old_item, conditions, conditional_op)
-      return unless conditions
+      return if conditions.nil? || conditions.empty?
+
       def check_condition_compat(old_item, name, predicate)
         exist = predicate['Exists']
         value = predicate['Value']
@@ -630,7 +631,7 @@ module FakeDynamo
       end
 
       checks = conditions.map do |name, predicate|
-        if predicate.has_key? "Value" or predicate.has_key? "Exists"
+        if predicate.has_key? "Value" or predicate.has_key? "Exists" or predicate.empty?
           raise ValidationException, "'ConditionalOperator' can not be used with 'Exists' and 'Value'" unless conditional_op.nil?
           check_condition_compat(old_item, name, predicate)
         else
