@@ -419,7 +419,11 @@ module FakeDynamo
 
     def drop_till_start_secondary_index(all_items, start_key_hash, forward, index)
       schema = index.key_schema
-      all_items = all_items.sort_by { |item| Key.from_index_item(item, schema) }
+      all_items = all_items.select { |item|
+        !item[schema.range_key.name].nil?
+      }.sort_by { |item|
+        Key.from_index_item(item, schema)
+      }
 
       unless forward
         all_items = all_items.reverse

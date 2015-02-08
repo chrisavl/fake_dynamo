@@ -602,6 +602,7 @@ module FakeDynamo
             t.put_item({'TableName' => 'User',
                 'Item' => { 'name' => { 'S' => '1' },
                   'age' => { 'N' => i},
+                  'score' => { 'N' => i},
                   'payload' => { 'S' => ('x' * 50 * 1024) }}})
           end
           query['KeyConditions']['name']['AttributeValueList'] = [{'S' => '1'}]
